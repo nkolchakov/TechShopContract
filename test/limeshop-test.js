@@ -47,40 +47,50 @@ describe('LimeShop', () => {
 
     describe('#addProduct', () => {
         it("should revert if NOT owner", async () => {
-            await expect(technoLimeShop.connect(await ethers.getSigner(nonOnwer1Address)).addProduct(product1))
-                .to.be.revertedWith('Ownable: caller is not the owner');
+            await expect(technoLimeShop.connect(await ethers.getSigner(nonOnwer1Address))
+                .addProducts([product1])
+            ).to.be.revertedWith('Ownable: caller is not the owner');
         });
 
-        it('should add new product if does NOT exist', async () => {
-            await technoLimeShop.addProduct(product1);
-            await technoLimeShop.addProduct(product2);
+        it('should add new products if they do NOT exist', async () => {
+            await technoLimeShop.addProducts([product1, product2]);
+
+            const products = await technoLimeShop.getProducts();
+            expect(products.length).to.equal(2);
+            expect(products[0].name).to.equal(product1.name);
+            expect(products[1].name).to.equal(product2.name);
             expect(await technoLimeShop.index()).to.equal(3);
         });
 
         it('should update quantity if product already exists', async () => {
-            await technoLimeShop.addProduct(product1);
-            await technoLimeShop.addProduct(product1);
+            await technoLimeShop.addProducts([product1, product1]);
             const prod = await technoLimeShop.idToProduct(1);
 
             expect(await technoLimeShop.index()).to.equal(2);
             expect(prod.quantity.toNumber()).to.equal(product1.quantity * 2);
         });
 
+        it("should revert if no products are provided", async () => {
+            await expect(technoLimeShop.addProducts([]))
+                .to.be.revertedWith("No products are provided !");
+        })
+
         it("should revert if new product's quantity is < 1", async () => {
             const invalidQuantityProduct = Object.assign({}, product1, { quantity: 0 });
-            await expect(technoLimeShop.addProduct(invalidQuantityProduct))
+            await expect(technoLimeShop.addProducts([product1, invalidQuantityProduct]))
                 .to.be.revertedWith('Quantity should be greater than 0');
         });
 
-
+        it("should revert if new product's name is empty", async () => {
+            const invalidNameProduct = Object.assign({}, product1, { name: '' });
+            await expect(technoLimeShop.addProducts([product1, invalidNameProduct]))
+                .to.be.revertedWith("Product name is empty !");
+        });
     });
 
     describe('#getProducts', () => {
         it('should list available products', async () => {
-            await technoLimeShop.addProduct(product1);
-            await technoLimeShop.addProduct(product2);
-            await technoLimeShop.addProduct(product3);
-
+            await technoLimeShop.addProducts([product1, product2, product3]);
             // buy all quantity from 2nd product, should be excluded from the result
             // more precisely, shown as an empty entry inside the array, which needs to be postprocessed clientside
             await technoLimeShop.buyProducts([2],
@@ -105,8 +115,7 @@ describe('LimeShop', () => {
         let nonOwnerSigner2;
 
         beforeEach(async () => {
-            await technoLimeShop.addProduct(product1);
-            await technoLimeShop.addProduct(product2);
+            await technoLimeShop.addProducts([product1, product2]);
             nonOwnerSigner = await ethers.getSigner(nonOnwer1Address);
             nonOwnerSigner2 = await ethers.getSigner(accounts[2]);
         });
@@ -184,7 +193,7 @@ describe('LimeShop', () => {
 
     describe('#refundProduct', () => {
         beforeEach(async () => {
-            await technoLimeShop.addProduct(product1);
+            await technoLimeShop.addProducts([product1]);
         })
 
         it('should revert if product was NOT bought beforehand', async () => {
@@ -238,8 +247,7 @@ describe('LimeShop', () => {
     describe('#getProductBuyers', () => {
         it("should be able to see the addresses of all clients that have ever bought a given product.",
             async () => {
-                await technoLimeShop.addProduct(product1);
-                await technoLimeShop.addProduct(product2);
+                await technoLimeShop.addProducts([product1, product2]);
 
                 await technoLimeShop.buyProducts([1],
                     { value: product1.priceWei });

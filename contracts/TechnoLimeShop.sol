@@ -1,13 +1,20 @@
-//SPDX-License-Identifier: Unlicense
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract TechnoLimeShop is Ownable {
-    event ProductAdded(Product _product);
+    event ProductsAdded(Product[] _products);
     event QuantityUpdated(uint256 _id, uint256 _updatedQuantity);
     event ProductsBought(address indexed _buyer, uint256[] _id);
     event Refund(address _client, uint256 _prodId);
+
+    struct ProductView {
+        uint256 id;
+        string name;
+        uint256 quantity;
+        uint256 priceWei;
+    }
 
     struct Product {
         string name;
@@ -38,62 +45,26 @@ contract TechnoLimeShop is Ownable {
 
     mapping(uint256 => address[]) productIdToClients;
 
-    // if this function is marked as external,
-    // the product argument can be calldata (cheaper)
-    function addProduct(Product memory newProduct) public onlyOwner {
-        require(newProduct.quantity > 0, "Quantity should be greater than 0");
-        uint256 productId = nameToProductId[newProduct.name];
-        if (idToProduct[productId].exists) {
-            // product exists, update quantity only
-            Product storage product = idToProduct[productId];
-            product.quantity += newProduct.quantity;
+    function addProducts(Product[] calldata newProds) external onlyOwner {
+        require(newProds.length > 0, "No products are provided !");
 
-            emit QuantityUpdated(productId, product.quantity);
-        } else {
-            // product does not exist, add it
-            Product memory product = Product(
-                newProduct.name,
-                newProduct.quantity,
-                newProduct.priceWei,
-                true
+        for (uint256 i = 0; i < newProds.length; i++) {
+            require(
+                newProds[i].quantity > 0,
+                "Quantity should be greater than 0 !"
             );
-
-            nameToProductId[product.name] = index;
-            idToProduct[index] = product;
-            index++;
-            emit ProductAdded(product);
+            require(
+                bytes(newProds[i].name).length > 0,
+                "Product name is empty !"
+            );
+            require(newProds[i].priceWei >= 0, "Price cannot be negative !");
+            addSingleProduct(newProds[i]);
         }
+
+        emit ProductsAdded(newProds);
     }
 
-    function getTotalPrice(uint256[] memory ids)
-        private
-        view
-        returns (uint256)
-    {
-        uint256 totalPrice = 0;
-        for (uint256 i = 0; i < ids.length; i++) {
-            if (idToProduct[ids[i]].exists) {
-                totalPrice += idToProduct[ids[i]].priceWei;
-            } else {
-                revert("product with such id does not exist");
-            }
-        }
-        return totalPrice;
-    }
-
-    function buySingleProduct(uint256 productId) private {
-        OrderStatus memory order = OrderStatus({
-            createdAtBlock: block.number,
-            isBought: true,
-            isRefunded: false
-        });
-
-        idToProduct[productId].quantity--;
-        clientToPurchasedProducts[msg.sender][productId] = order;
-        productIdToClients[productId].push(msg.sender);
-    }
-
-    function buyProducts(uint256[] memory ids) public payable {
+    function buyProducts(uint256[] calldata ids) external payable {
         // max number of purchases can be added
         require(ids.length > 0, "No ids are provided");
         uint256 totalPrice = getTotalPrice(ids);
@@ -138,13 +109,71 @@ contract TechnoLimeShop is Ownable {
         emit Refund(msg.sender, prodId);
     }
 
-    function getProducts() public view returns (Product[] memory) {
-        Product[] memory result = new Product[](index - 1);
+    function getTotalPrice(uint256[] memory ids)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 totalPrice = 0;
+        for (uint256 i = 0; i < ids.length; i++) {
+            if (idToProduct[ids[i]].exists) {
+                totalPrice += idToProduct[ids[i]].priceWei;
+            } else {
+                revert("product with such id does not exist");
+            }
+        }
+        return totalPrice;
+    }
+
+    function addSingleProduct(Product memory newProduct) private onlyOwner {
+        uint256 productId = nameToProductId[newProduct.name];
+        if (idToProduct[productId].exists) {
+            // product exists, update quantity only
+            Product storage product = idToProduct[productId];
+            product.quantity += newProduct.quantity;
+
+            emit QuantityUpdated(productId, product.quantity);
+        } else {
+            // product does not exist, add it
+            Product memory product = Product(
+                newProduct.name,
+                newProduct.quantity,
+                newProduct.priceWei,
+                true
+            );
+
+            nameToProductId[product.name] = index;
+            idToProduct[index] = product;
+            index++;
+        }
+    }
+
+    function buySingleProduct(uint256 productId) private {
+        OrderStatus memory order = OrderStatus({
+            createdAtBlock: block.number,
+            isBought: true,
+            isRefunded: false
+        });
+
+        idToProduct[productId].quantity--;
+        clientToPurchasedProducts[msg.sender][productId] = order;
+        productIdToClients[productId].push(msg.sender);
+    }
+
+    function getProducts() public view returns (ProductView[] memory) {
+        ProductView[] memory result = new ProductView[](index - 1);
         for (uint256 i = 0; i < index - 1; i++) {
             // because of unavailable products, some gaps with empty objects will be available,
             // would be cheaper if postprocess them client/backend side
-            if (idToProduct[i + 1].quantity > 0) {
-                result[i] = idToProduct[i + 1];
+            Product memory ogProduct = idToProduct[i + 1];
+            if (ogProduct.quantity > 0) {
+                ProductView memory curr = ProductView(
+                    i + 1,
+                    ogProduct.name,
+                    ogProduct.quantity,
+                    ogProduct.priceWei
+                );
+                result[i] = curr;
             }
         }
         return result;
