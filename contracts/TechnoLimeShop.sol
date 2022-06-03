@@ -6,7 +6,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 contract TechnoLimeShop is Ownable {
     event ProductAdded(Product _product);
     event QuantityUpdated(uint256 _id, uint256 _updatedQuantity);
-    event ProductBought(address indexed _buyer, uint256 _id, uint256 _quantity);
+    event ProductsBought(address indexed _buyer, uint256[] _id);
+    event Refund(address _client, uint256 _prodId);
 
     struct Product {
         string name;
@@ -15,16 +16,24 @@ contract TechnoLimeShop is Ownable {
         bool exists;
     }
 
+    struct OrderStatus {
+        uint256 createdAtBlock;
+        bool isBought;
+        bool isRefunded;
+    }
+
+    uint256 private constant REFUND_MAX_BLOCKNUMBER = 100;
+
     // 0 is reserved for non-existing products
     uint256 public index = 1;
 
-    mapping(uint256 => Product) idToProduct;
+    mapping(uint256 => Product) public idToProduct;
 
     // if the name does NOT exist, 0 is returned
     mapping(string => uint256) nameToProductId;
 
-    // client => (productId => quantity)
-    mapping(address => mapping(uint256 => uint256))
+    // client => (productId => OrderStatus)
+    mapping(address => mapping(uint256 => OrderStatus))
         public clientToPurchasedProducts;
 
     mapping(uint256 => address[]) productIdToClients;
@@ -56,34 +65,84 @@ contract TechnoLimeShop is Ownable {
         }
     }
 
-    function buyProduct(uint256 id, uint256 quantity) public payable {
+    function getTotalPrice(uint256[] memory ids)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 totalPrice = 0;
+        for (uint256 i = 0; i < ids.length; i++) {
+            if (idToProduct[ids[i]].exists) {
+                totalPrice += idToProduct[ids[i]].priceWei;
+            } else {
+                revert("product with such id does not exist");
+            }
+        }
+        return totalPrice;
+    }
+
+    function buySingleProduct(uint256 productId) private {
+        OrderStatus memory order = OrderStatus({
+            createdAtBlock: block.number,
+            isBought: true,
+            isRefunded: false
+        });
+
+        idToProduct[productId].quantity--;
+        clientToPurchasedProducts[msg.sender][productId] = order;
+        productIdToClients[productId].push(msg.sender);
+    }
+
+    function buyProducts(uint256[] memory ids) public payable {
+        // max number of purchases can be added
+        require(ids.length > 0, "No ids are provided");
+        uint256 totalPrice = getTotalPrice(ids);
+        // tips are accepted
+        require(msg.value >= totalPrice, "Not enough ETH are provided !");
+
+        for (uint256 i = 0; i < ids.length; i++) {
+            uint256 prodId = ids[i];
+            require(
+                !clientToPurchasedProducts[msg.sender][prodId].isBought,
+                "The client already bought that product !"
+            );
+            require(
+                idToProduct[prodId].quantity > 0,
+                "There is no quantity available !"
+            );
+
+            buySingleProduct(prodId);
+        }
+
+        emit ProductsBought(msg.sender, ids);
+    }
+
+    function refundProduct(uint256 prodId) public {
+        OrderStatus storage orderStatus = clientToPurchasedProducts[msg.sender][
+            prodId
+        ];
+
+        require(orderStatus.isBought, "You never bought that product !");
+        require(!orderStatus.isRefunded, "You already refunded that product !");
         require(
-            clientToPurchasedProducts[msg.sender][id] == 0,
-            "Already bought"
-        );
-        Product storage desiredProduct = idToProduct[id];
-        require(
-            msg.value >= (desiredProduct.priceWei * quantity),
-            "Provided ETH is less than the price!"
-        );
-        require(desiredProduct.exists, "Product with such ID does not exist !");
-        require(
-            desiredProduct.quantity >= quantity,
-            "There is no quantity avialable !"
+            orderStatus.createdAtBlock + REFUND_MAX_BLOCKNUMBER >= block.number,
+            "Refund period of 100 blocks is expired !"
         );
 
-        desiredProduct.quantity -= quantity;
-        clientToPurchasedProducts[msg.sender][id] += quantity;
-        productIdToClients[id].push(msg.sender);
+        Product storage product = idToProduct[prodId];
+        product.quantity++;
+        orderStatus.isRefunded = true;
 
-        emit ProductBought(msg.sender, id, quantity);
+        payable(msg.sender).transfer(product.priceWei);
+
+        emit Refund(msg.sender, prodId);
     }
 
     function getProducts() public view returns (Product[] memory) {
         Product[] memory result = new Product[](index - 1);
         for (uint256 i = 0; i < index - 1; i++) {
             // because of unavailable products, some gaps with empty objects will be available,
-            // would be cheaper if postprocess them in the backend
+            // would be cheaper if postprocess them client/backend side
             if (idToProduct[i + 1].quantity > 0) {
                 result[i] = idToProduct[i + 1];
             }
@@ -91,14 +150,8 @@ contract TechnoLimeShop is Ownable {
         return result;
     }
 
-    function getProductById(uint256 id) public view returns (Product memory) {
-        return idToProduct[id];
-    }
-
-    /*
-        Everyone should be able to see the addresses of all clients
-         that have ever bought a given product.
-     */
+    /* Everyone should be able to see the addresses of all clients
+         that have ever bought a given product. */
     function getProductBuyers(uint256 productId)
         public
         view
@@ -112,18 +165,3 @@ contract TechnoLimeShop is Ownable {
         return productIdToClients[productId];
     }
 }
-
-/**
-
-Ако може пояснение, за комбинацията от двете условия, 'times' го разбирам малко противоречиво.
-- A client cannot buy the same product more than one time.
-    -- Какво означава това изрично условие ?
-    -- 'one time' го разбирам, покупката да бъде в рамките на 1 транзакция и без значение колко бройки, стига да има налични ? Защото долу се споменава, че е възможно купуването на повече бройки, ако има наличност (върнати или заредени).
-- The clients should not be able to buy a product more times than the quantity in the store unless a product is returned or added by the administrator (owner)
-
-
-В случай, че може да се купуват повече бройки: 
-Buyers should be able to return products if they are not satisfied (within a certain period in blocktime: 100 blocks).
-    - за връщане на продукт с quantity > 1, частично или пълно връщане на бройките ?
-
- */

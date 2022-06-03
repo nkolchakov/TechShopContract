@@ -1,4 +1,4 @@
-const { ethers, deployments, getUnnamedAccounts, network } = require('hardhat');
+const { ethers, deployments, getUnnamedAccounts, network, waffle } = require('hardhat');
 const { expect } = require("chai");
 
 
@@ -19,7 +19,7 @@ describe('LimeShop', () => {
 
     const product2 = {
         name: "product2",
-        quantity: 3,
+        quantity: 2,
         priceWei: 1200,
         exists: true
     }
@@ -60,7 +60,7 @@ describe('LimeShop', () => {
         it('should update quantity if product already exists', async () => {
             await technoLimeShop.addProduct(product1);
             await technoLimeShop.addProduct(product1);
-            const prod = await technoLimeShop.getProductById(1);
+            const prod = await technoLimeShop.idToProduct(1);
 
             expect(await technoLimeShop.index()).to.equal(2);
             expect(prod.quantity.toNumber()).to.equal(product1.quantity * 2);
@@ -83,8 +83,12 @@ describe('LimeShop', () => {
 
             // buy all quantity from 2nd product, should be excluded from the result
             // more precisely, shown as an empty entry inside the array, which needs to be postprocessed clientside
-            await technoLimeShop.buyProduct(2, product2.quantity,
-                { value: product2.priceWei * product2.quantity })
+            await technoLimeShop.buyProducts([2],
+                { value: product2.priceWei })
+
+            await technoLimeShop
+                .connect(await ethers.getSigner(accounts[1]))
+                .buyProducts([2], { value: product2.priceWei })
 
             // in the result, there are gaps w/ empty entries. Filter them clientside 
             const productsList = (await technoLimeShop.getProducts())
@@ -97,7 +101,6 @@ describe('LimeShop', () => {
     });
 
     describe('#buyProduct', () => {
-        const quantity = 3;
         let nonOwnerSigner;
         let nonOwnerSigner2;
 
@@ -110,45 +113,125 @@ describe('LimeShop', () => {
 
         it('should revert if provided ETH is less than the price', async () => {
             await expect(technoLimeShop.connect(nonOwnerSigner)
-                .buyProduct(1, quantity, { value: (product1.priceWei * quantity) - 100 }))
-                .to.be.revertedWith("Provided ETH is less than the price!")
+                .buyProducts([1, 2], { value: (product1.priceWei + product2.priceWei) - 100 }))
+                .to.be.revertedWith("Not enough ETH are provided !")
         });
 
         it('should buy the product correctly', async () => {
             const prod1Id = 1;
-            const secondBuyerQuantity = 1;
-            await technoLimeShop
+            // buy with 1st acc
+            const acc1BuyTx = await technoLimeShop
                 .connect(nonOwnerSigner)
-                .buyProduct(prod1Id, quantity, { value: product1.priceWei * quantity });
+                .buyProducts([prod1Id], { value: product1.priceWei });
+            const acc1BlockNumber = acc1BuyTx.blockNumber;
 
-            await technoLimeShop
+            // buy with 2nd acc
+            const acc2BuyTx = await technoLimeShop
                 .connect(nonOwnerSigner2)
-                .buyProduct(prod1Id, secondBuyerQuantity, { value: product1.priceWei * secondBuyerQuantity });
+                .buyProducts([prod1Id], { value: product1.priceWei });
 
+            const acc2BlockNumber = acc2BuyTx.blockNumber;
 
-            // verify it's to the client's history
-            expect(await technoLimeShop.clientToPurchasedProducts(nonOnwer1Address, prod1Id))
-                .to.equal(quantity);
+            // verify orderStatus creation
+            const acc1OrderStatus = await technoLimeShop
+                .clientToPurchasedProducts(nonOnwer1Address, prod1Id);
+            expect(acc1OrderStatus.createdAtBlock).to.equal(acc1BlockNumber);
+            expect(acc1OrderStatus.isBought).to.equal(true);
+            expect(acc1OrderStatus.isRefunded).to.equal(false);
 
-            expect(await technoLimeShop.clientToPurchasedProducts(accounts[2], prod1Id))
-                .to.equal(secondBuyerQuantity);
+            const acc2OrderStatus = await technoLimeShop
+                .clientToPurchasedProducts(accounts[2], prod1Id);
+
+            expect(acc2OrderStatus.createdAtBlock).to.equal(acc2BlockNumber);
+            expect(acc2OrderStatus.isBought).to.equal(true);
+            expect(acc2OrderStatus.isRefunded).to.equal(false);
 
             // verify product's quantity is reduced
-            const boughtProduct = await technoLimeShop.getProductById(prod1Id);
+            const boughtProduct = await technoLimeShop.idToProduct(prod1Id);
             expect(boughtProduct.quantity.toNumber())
-                .to.equal(product1.quantity - quantity - secondBuyerQuantity);
+                .to.equal(product1.quantity - 2);
 
             // verify each product keeps a history for its buyers
             const productBuyers = await technoLimeShop.getProductBuyers(prod1Id);
+            expect(productBuyers.length).to.equal(2);
             expect(productBuyers[0]).to.equal(nonOnwer1Address);
             expect(productBuyers[1]).to.equal(accounts[2]);
         });
 
-        it("should revert if client buys more quantity than available", async () => {
-            const exceedingQuantity = product1.quantity + 1;
+        it('should revert if client already bought the same product', async () => {
+            await technoLimeShop
+                .buyProducts([1], { value: product1.priceWei });
+
             await expect(technoLimeShop
-                .buyProduct(1, exceedingQuantity, { value: product1.priceWei * exceedingQuantity }))
-                .to.be.revertedWith("There is no quantity avialable !")
+                .buyProducts([2, 1], { value: product1.priceWei + product2.priceWei }))
+                .to.be.revertedWith("The client already bought that product !")
+        });
+
+        it("should revert if quantity is over", async () => {
+            await technoLimeShop
+                .buyProducts([2], { value: product2.priceWei });
+
+            await technoLimeShop
+                .connect(await ethers.getSigner(accounts[1]))
+                .buyProducts([2], { value: product2.priceWei });
+
+            await expect(technoLimeShop
+                .connect(await ethers.getSigner(accounts[3]))
+                .buyProducts([2], { value: product2.priceWei }))
+                .to.be.revertedWith("There is no quantity available !")
+        });
+    });
+
+    describe('#refundProduct', () => {
+        beforeEach(async () => {
+            await technoLimeShop.addProduct(product1);
+        })
+
+        it('should revert if product was NOT bought beforehand', async () => {
+            await expect(technoLimeShop.refundProduct(1))
+                .to.be.revertedWith("You never bought that product !")
+        });
+
+        it('should revert if product was Refunded in the past', async () => {
+            await technoLimeShop.buyProducts([1], { value: product1.priceWei });
+            await technoLimeShop.refundProduct(1)
+
+            await expect(technoLimeShop.refundProduct(1))
+                .to.be.revertedWith("You already refunded that product !");
+        });
+
+        it('should revert if refund period of 100 blocks expired', async () => {
+            await technoLimeShop.buyProducts([1], { value: product1.priceWei });
+            // mine 101 blocks (0x65)
+            // https://hardhat.org/hardhat-network/reference#hardhat-mine
+            network.provider.send("hardhat_mine", ['0x65']);
+
+            await expect(technoLimeShop.refundProduct(1))
+                .to.be.revertedWith("Refund period of 100 blocks is expired !");
+        });
+
+        it('should update balances and quantity correctly', async () => {
+            await technoLimeShop.buyProducts([1], { value: product1.priceWei });
+
+            const fetchedProd1Before = await technoLimeShop.idToProduct(1);
+
+            const provider = waffle.provider;
+            const contractBalanceBeforeRefund = await provider.getBalance(technoLimeShop.address);
+
+            await technoLimeShop.refundProduct(1);
+            const fetchedProd1After = await technoLimeShop.idToProduct(1);
+
+            // recover quantity
+            expect(fetchedProd1After.quantity.toNumber())
+                .to.be.equal(fetchedProd1Before.quantity.toNumber() + 1);
+
+            // order set as refunded
+            const orderStatus = await technoLimeShop.clientToPurchasedProducts(accounts[0], 1);
+            expect(orderStatus.isRefunded).to.equal(true);
+
+            // refunded to sender
+            expect(await provider.getBalance(technoLimeShop.address))
+                .to.equal(contractBalanceBeforeRefund - product1.priceWei);
         });
     });
 
@@ -158,13 +241,14 @@ describe('LimeShop', () => {
                 await technoLimeShop.addProduct(product1);
                 await technoLimeShop.addProduct(product2);
 
-                await technoLimeShop.buyProduct(1, 2, { value: product1.priceWei * 2 });
+                await technoLimeShop.buyProducts([1],
+                    { value: product1.priceWei });
                 await technoLimeShop
                     .connect(await ethers.getSigner(accounts[1]))
-                    .buyProduct(1, 2, { value: product1.priceWei * 2 });
+                    .buyProducts([1], { value: product1.priceWei });
                 await technoLimeShop
                     .connect(await ethers.getSigner(accounts[2]))
-                    .buyProduct(2, 1, { value: product2.priceWei });
+                    .buyProducts([2], { value: product2.priceWei });
 
                 const product1Buyers = await technoLimeShop.getProductBuyers(1);
                 const product2Buyers = await technoLimeShop.getProductBuyers(2);
