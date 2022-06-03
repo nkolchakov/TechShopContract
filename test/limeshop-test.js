@@ -45,7 +45,7 @@ describe('LimeShop', () => {
         expect(startingIndex).to.equal(1);
     });
 
-    describe('#addProduct', () => {
+    describe('#addProducts', () => {
         it("should revert if NOT owner", async () => {
             await expect(technoLimeShop.connect(await ethers.getSigner(nonOnwer1Address))
                 .addProducts([product1])
@@ -62,13 +62,10 @@ describe('LimeShop', () => {
             expect(await technoLimeShop.index()).to.equal(3);
         });
 
-        it('should update quantity if product already exists', async () => {
-            await technoLimeShop.addProducts([product1, product1]);
-            const prod = await technoLimeShop.idToProduct(1);
-
-            expect(await technoLimeShop.index()).to.equal(2);
-            expect(prod.quantity.toNumber()).to.equal(product1.quantity * 2);
-        });
+        it("should revert if products are duplicated", async () => {
+            await expect(technoLimeShop.addProducts([product1, product1]))
+                .to.be.revertedWith("Product with such name already exists !");
+        })
 
         it("should revert if no products are provided", async () => {
             await expect(technoLimeShop.addProducts([]))
@@ -76,7 +73,7 @@ describe('LimeShop', () => {
         })
 
         it("should revert if new product's quantity is < 1", async () => {
-            const invalidQuantityProduct = Object.assign({}, product1, { quantity: 0 });
+            const invalidQuantityProduct = Object.assign({}, product1, { name: "newUniqueName", quantity: 0 });
             await expect(technoLimeShop.addProducts([product1, invalidQuantityProduct]))
                 .to.be.revertedWith('Quantity should be greater than 0');
         });
@@ -86,6 +83,33 @@ describe('LimeShop', () => {
             await expect(technoLimeShop.addProducts([product1, invalidNameProduct]))
                 .to.be.revertedWith("Product name is empty !");
         });
+    });
+
+    describe('#updateProducts', () => {
+        const updateProd1 = { id: 1, quantity: 15 };
+        const updateProd2 = { id: 2, quantity: 15 };
+
+        it('should correcylu update quantity if products are added', async () => {
+            await technoLimeShop.addProducts([product1, product2]);
+            await technoLimeShop.updateProducts([updateProd1, updateProd2]);
+            const prod1 = await technoLimeShop.idToProduct(1);
+            const prod2 = await technoLimeShop.idToProduct(2);
+
+            expect(prod1.quantity.toNumber()).to.equal(product1.quantity + updateProd1.quantity);
+            expect(prod2.quantity.toNumber()).to.equal(product2.quantity + updateProd2.quantity);
+        });
+
+        it("should revert if NOT owner", async () => {
+            await expect(technoLimeShop.connect(await ethers.getSigner(nonOnwer1Address))
+                .updateProducts([updateProd1])
+            ).to.be.revertedWith('Ownable: caller is not the owner');
+        });
+
+
+        it("should revert if product is NOT added beforehand", async () => {
+            await expect(technoLimeShop.updateProducts([updateProd1, updateProd2]))
+                .to.be.revertedWith("Product with such id does not exist");
+        })
     });
 
     describe('#getProducts', () => {

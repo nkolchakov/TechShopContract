@@ -23,6 +23,11 @@ contract TechnoLimeShop is Ownable {
         bool exists;
     }
 
+    struct UpdateProduct {
+        uint256 id;
+        uint256 quantity;
+    }
+
     struct OrderStatus {
         uint256 createdAtBlock;
         bool isBought;
@@ -50,18 +55,43 @@ contract TechnoLimeShop is Ownable {
 
         for (uint256 i = 0; i < newProds.length; i++) {
             require(
-                newProds[i].quantity > 0,
-                "Quantity should be greater than 0 !"
-            );
-            require(
                 bytes(newProds[i].name).length > 0,
                 "Product name is empty !"
+            );
+            require(
+                nameToProductId[newProds[i].name] == 0,
+                "Product with such name already exists !"
+            );
+            require(
+                newProds[i].quantity > 0,
+                "Quantity should be greater than 0 !"
             );
             require(newProds[i].priceWei >= 0, "Price cannot be negative !");
             addSingleProduct(newProds[i]);
         }
 
         emit ProductsAdded(newProds);
+    }
+
+    function updateProducts(UpdateProduct[] calldata prods) external onlyOwner {
+        require(prods.length > 0, "No products are provided !");
+
+        for (uint256 i = 0; i < prods.length; i++) {
+            require(prods[i].id > 0, "Invalid id !");
+            require(
+                prods[i].quantity > 0,
+                "Quantity should be greater than 0 !"
+            );
+            require(
+                idToProduct[prods[i].id].exists,
+                "Product with such id does not exist"
+            );
+
+            Product storage product = idToProduct[prods[i].id];
+            product.quantity += prods[i].quantity;
+
+            emit QuantityUpdated(prods[i].id, product.quantity);
+        }
     }
 
     function buyProducts(uint256[] calldata ids) external payable {
@@ -126,26 +156,16 @@ contract TechnoLimeShop is Ownable {
     }
 
     function addSingleProduct(Product memory newProduct) private onlyOwner {
-        uint256 productId = nameToProductId[newProduct.name];
-        if (idToProduct[productId].exists) {
-            // product exists, update quantity only
-            Product storage product = idToProduct[productId];
-            product.quantity += newProduct.quantity;
+        Product memory product = Product(
+            newProduct.name,
+            newProduct.quantity,
+            newProduct.priceWei,
+            true
+        );
 
-            emit QuantityUpdated(productId, product.quantity);
-        } else {
-            // product does not exist, add it
-            Product memory product = Product(
-                newProduct.name,
-                newProduct.quantity,
-                newProduct.priceWei,
-                true
-            );
-
-            nameToProductId[product.name] = index;
-            idToProduct[index] = product;
-            index++;
-        }
+        nameToProductId[product.name] = index;
+        idToProduct[index] = product;
+        index++;
     }
 
     function buySingleProduct(uint256 productId) private {
