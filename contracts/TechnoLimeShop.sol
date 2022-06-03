@@ -24,7 +24,9 @@ contract TechnoLimeShop is Ownable {
     mapping(string => uint256) nameToProductId;
 
     // client => (productId => quantity)
-    mapping(address => mapping(uint256 => uint256)) clientToPurchasedProducts;
+    mapping(address => mapping(uint256 => uint256))
+        public clientToPurchasedProducts;
+
     mapping(uint256 => address[]) productIdToClients;
 
     // if this function is marked as external,
@@ -54,12 +56,16 @@ contract TechnoLimeShop is Ownable {
         }
     }
 
-    function buyProduct(uint256 id, uint256 quantity) public {
+    function buyProduct(uint256 id, uint256 quantity) public payable {
         require(
             clientToPurchasedProducts[msg.sender][id] == 0,
             "Already bought"
         );
         Product storage desiredProduct = idToProduct[id];
+        require(
+            msg.value >= (desiredProduct.priceWei * quantity),
+            "Provided ETH is less than the price!"
+        );
         require(desiredProduct.exists, "Product with such ID does not exist !");
         require(
             desiredProduct.quantity >= quantity,
@@ -70,16 +76,17 @@ contract TechnoLimeShop is Ownable {
         clientToPurchasedProducts[msg.sender][id] += quantity;
         productIdToClients[id].push(msg.sender);
 
-        // update balance
-
-        // emit event
         emit ProductBought(msg.sender, id, quantity);
     }
 
     function getProducts() public view returns (Product[] memory) {
-        Product[] memory result = new Product[](index);
-        for (uint256 i = 0; i < index; i++) {
-            result[i] = idToProduct[i];
+        Product[] memory result = new Product[](index - 1);
+        for (uint256 i = 0; i < index - 1; i++) {
+            // because of unavailable products, some gaps with empty objects will be available,
+            // would be cheaper if postprocess them in the backend
+            if (idToProduct[i + 1].quantity > 0) {
+                result[i] = idToProduct[i + 1];
+            }
         }
         return result;
     }
@@ -88,6 +95,10 @@ contract TechnoLimeShop is Ownable {
         return idToProduct[id];
     }
 
+    /*
+        Everyone should be able to see the addresses of all clients
+         that have ever bought a given product.
+     */
     function getProductBuyers(uint256 productId)
         public
         view
