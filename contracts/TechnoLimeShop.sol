@@ -15,7 +15,8 @@ contract TechnoLimeShop is Ownable {
         bool exists;
     }
 
-    uint256 public index = 0;
+    // 0 is reserved for non-existing products
+    uint256 public index = 1;
 
     mapping(uint256 => Product) idToProduct;
 
@@ -31,7 +32,7 @@ contract TechnoLimeShop is Ownable {
     function addProduct(Product memory newProduct) public onlyOwner {
         require(newProduct.quantity > 0, "Quantity should be greater than 0");
         uint256 productId = nameToProductId[newProduct.name];
-        if (productId > 0) {
+        if (idToProduct[productId].exists) {
             // product exists, update quantity only
             Product storage product = idToProduct[productId];
             product.quantity += newProduct.quantity;
@@ -42,7 +43,7 @@ contract TechnoLimeShop is Ownable {
             Product memory product = Product(
                 newProduct.name,
                 newProduct.quantity,
-                5 * 10e18,
+                newProduct.priceWei,
                 true
             );
 
@@ -81,6 +82,10 @@ contract TechnoLimeShop is Ownable {
             result[i] = idToProduct[i];
         }
         return result;
+    }
+
+    function getProductById(uint256 id) public view returns (Product memory) {
+        return idToProduct[id];
     }
 
     function getProductBuyers(uint256 productId)
